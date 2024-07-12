@@ -12551,20 +12551,21 @@ cdef class Matrix(Matrix1):
             A, B = coercion_model.canonical_coercion(A, B)
         # base rings are equal now, via above check
 
-        similar = (A.rational_form() == B.rational_form())
         if not transformation:
+            similar = (A.rational_form() == B.rational_form())
             return similar
-        elif not similar:
-            return (False, None)
         else:
             # rational form routine does not provide transformation
             # so if possible, get transformations to Jordan form
 
             # first try to look for Jordan forms over the fraction field
             try:
-                _, SA = A.jordan_form(transformation=True)
-                _, SB = B.jordan_form(transformation=True)
-                return (True, SB * SA.inverse())
+                rat_form_A, SA = A.rational_form(transformation=True)
+                rat_form_B, SB = B.rational_form(transformation=True)
+                if rat_form_A == rat_form_B:
+                    return (True, SB * SA.inverse())
+                else:
+                    return (False, None)
             except (ValueError, RuntimeError):
                 pass
 
@@ -12575,9 +12576,12 @@ cdef class Matrix(Matrix1):
                 closure = ring.algebraic_closure()
                 A = A.change_ring(closure)
                 B = B.change_ring(closure)
-                _, SA = A.jordan_form(transformation=True)
-                _, SB = B.jordan_form(transformation=True)
-                return (True, SB * SA.inverse())
+                rat_form_A, SA = A.rational_form(transformation=True)
+                rat_form_B, SB = B.rational_form(transformation=True)
+                if rat_form_A == rat_form_B:
+                    return (True, SB * SA.inverse())
+                else:
+                    return (False, None)
             except (ValueError, RuntimeError, NotImplementedError):
                 raise RuntimeError('unable to compute transformation for similar matrices')
 
@@ -17241,7 +17245,7 @@ cdef class Matrix(Matrix1):
         else:
             return Z
 
-    def rational_form(self, format='right', subdivide=True):
+    def rational_form(self, format='right', subdivide=True, transform=False):
         r"""
         Returns the rational canonical form, also known as Frobenius form.
 
@@ -17613,57 +17617,81 @@ cdef class Matrix(Matrix1):
         if subdivide not in [True, False]:
             raise ValueError("'subdivide' keyword must be True or False, not {0}".format(subdivide))
 
-        _, polys, corners = self._zigzag_form(basis=False)
-        cdef Py_ssize_t k = len(polys), j, i
-        F = sage.rings.polynomial.polynomial_ring_constructor.PolynomialRing(R, 'x')
-        cdef list C = [F(p) for p in polys]
-        cdef list B = [b.is_one() for b in corners]
-        B.append(False)  # no last block, so no corner
+        if transform:
+           U, Z, polys, corners = self._zigzag_form(basis=True)
+           index_first = len(polys[0])-1
+           index_last = len(polys[0])+len(polys)-2
+           C1 = companion_matrix(polys[1])
+           C1T = Z[index_first:index_last, index_first;index_last]
+           if C1T != C1:
+                #Check wether the companion matrix is transposed or not
+                if C1T.transpose() != C1:
+                    raise ValueError("Error with matrix calculation not correct")
 
-        if B[0]:
-            V = [F.one()]
+                #Apply transformation to get the companion matrix in the middle
+                Rpoly.<x> = R[]
+                d = len(polys[1]) - 1
+                vd = [Rpoly(0)] * d
+                vd[d-1] = 1
+                v = vector(Rpoly, vd)
+                T = C1T.cyclic_subspace(v)
+                Id1 = identity_matrix(len(polys[0])-1)
+                Id2 = identity_matrix(len(polys[2])-1)
+                augmentedT = block_matrix([Id1, 0], [0, T, 0], [0, Id2])
+                Z = T.matrix.inverse()*Z*T.matrix
+
         else:
-            V = [F.zero()]
+            _, polys, corners = self._zigzag_form(basis=False)
+            cdef Py_ssize_t k = len(polys), j, i
+            F = sage.rings.polynomial.polynomial_ring_constructor.PolynomialRing(R, 'x')
+            cdef list C = [F(p) for p in polys]
+            cdef list B = [b.is_one() for b in corners]
+            B.append(False)  # no last block, so no corner
 
-        for j in range(1, k):
-            V[j-1] = gcd([V[j-1], C[j], C[j-1]])
-            for i in range(j-2, -1, -1):
-                V[i] = gcd([V[i], V[i+1], C[i]])
-            m = -F.one()
-            for i in range(j):
-                g = gcd(m*V[i], C[i])
-                q, _ = C[i].quo_rem(g)
-                C[i] = g
-                if B[j]:
-                    _, V[i] = m.quo_rem(C[i])
-                else:
-                    V[i] = F.zero()
-                m = m * q
-            C[j] = m * C[j]
-            if B[j]:
-                V.append(m)
+            if B[0]:
+                V = [F.one()]
             else:
-                V.append(F.zero())
+                V = [F.zero()]
 
-        # Leading constant polynomials in C are size zero blocks, so toss them
-        # Massage remainder to have leading coefficient 1
-        while C and not C[0].degree():
-            del C[0]
-        for i in range(len(C)):
-            unit = C[i].leading_coefficient()
-            if not unit.is_one():
-                C[i] = ~unit*C[i]
+            for j in range(1, k):
+                V[j-1] = gcd([V[j-1], C[j], C[j-1]])
+                for i in range(j-2, -1, -1):
+                    V[i] = gcd([V[i], V[i+1], C[i]])
+                m = -F.one()
+                for i in range(j):
+                    g = gcd(m*V[i], C[i])
+                    q, _ = C[i].quo_rem(g)
+                    C[i] = g
+                    if B[j]:
+                        _, V[i] = m.quo_rem(C[i])
+                    else:
+                        V[i] = F.zero()
+                    m = m * q
+                C[j] = m * C[j]
+                if B[j]:
+                    V.append(m)
+                else:
+                    V.append(F.zero())
 
-        if format == 'invariants':
-            inv = []
-            for poly in C:
-                inv.append(poly.list())
-            return inv
-        elif format in ['right', 'left', 'top', 'bottom']:
-            companions = []
-            for poly in C:
-                companions.append(companion_matrix(poly, format=format))
-            return block_diagonal_matrix(companions, subdivide=subdivide)
+            # Leading constant polynomials in C are size zero blocks, so toss them
+            # Massage remainder to have leading coefficient 1
+            while C and not C[0].degree():
+                del C[0]
+            for i in range(len(C)):
+                unit = C[i].leading_coefficient()
+                if not unit.is_one():
+                    C[i] = ~unit*C[i]
+
+            if format == 'invariants':
+                inv = []
+                for poly in C:
+                    inv.append(poly.list())
+                return inv
+            elif format in ['right', 'left', 'top', 'bottom']:
+                companions = []
+                for poly in C:
+                    companions.append(companion_matrix(poly, format=format))
+                return block_diagonal_matrix(companions, subdivide=subdivide)
 
     def is_positive_operator_on(self, K1, K2=None):
         r"""
