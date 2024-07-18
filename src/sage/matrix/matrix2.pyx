@@ -12228,7 +12228,7 @@ cdef class Matrix(Matrix1):
 
         return True
 
-    def is_similar(self, other, transformation=False, test=False):
+    def is_similar(self, other, transformation=False):
         r"""
         Return ``True`` if ``self`` and ``other`` are similar,
         i.e. related by a change-of-basis matrix.
@@ -12550,70 +12550,40 @@ cdef class Matrix(Matrix1):
         if not have_same_parent(A, B):
             A, B = coercion_model.canonical_coercion(A, B)
         # base rings are equal now, via above check
-        if test:
-            if not transformation:
-                similar = (A.rational_form(test) == B.rational_form(test))
-                return similar
-            else:
-                # rational form routine does not provide transformation
-                # so if possible, get transformations to Jordan form
 
-                # first try to look for Jordan forms over the fraction field
-                try:
-                    rat_form_A, SA = A.rational_form(transformation=True, test)
-                    rat_form_B, SB = B.rational_form(transformation=True, test)
-                    if rat_form_A == rat_form_B:
-                        return (True, SB * SA.inverse())
-                    else:
-                        return (False, None)
-                except (ValueError, RuntimeError):
-                    pass
-
-                # now move to the algebraic closure
-                # so as to contain potential complex eigenvalues
-                try:
-                    ring = A.base_ring()
-                    closure = ring.algebraic_closure()
-                    A = A.change_ring(closure)
-                    B = B.change_ring(closure)
-                    rat_form_A, SA = A.rational_form(transformation=True, test)
-                    rat_form_B, SB = B.rational_form(transformation=True, test)
-                    if rat_form_A == rat_form_B:
-                        return (True, SB * SA.inverse())
-                    else:
-                        return (False, None)
-                except (ValueError, RuntimeError, NotImplementedError):
-                    raise RuntimeError('unable to compute transformation for similar matrices')
-        else:
+        if not transformation:
             similar = (A.rational_form() == B.rational_form())
-            if not transformation:
-                return similar
-            elif not similar:
-                return (False, None)
-            else:
-                # rational form routine does not provide transformation
-                # so if possible, get transformations to Jordan form
+            return similar
+        else:
+            # rational form routine does not provide transformation
+            # so if possible, get transformations to Jordan form
 
-                # first try to look for Jordan forms over the fraction field
-                try:
-                    _, SA = A.jordan_form(transformation=True)
-                    _, SB = B.jordan_form(transformation=True)
+            # first try to look for Jordan forms over the fraction field
+            try:
+                rat_form_A, SA = A.rational_form(transformation=True)
+                rat_form_B, SB = B.rational_form(transformation=True)
+                if rat_form_A == rat_form_B:
                     return (True, SB * SA.inverse())
-                except (ValueError, RuntimeError):
-                    pass
+                else:
+                    return (False, None)
+            except (ValueError, RuntimeError):
+                pass
 
-                # now move to the algebraic closure
-                # so as to contain potential complex eigenvalues
-                try:
-                    ring = A.base_ring()
-                    closure = ring.algebraic_closure()
-                    A = A.change_ring(closure)
-                    B = B.change_ring(closure)
-                    _, SA = A.jordan_form(transformation=True)
-                    _, SB = B.jordan_form(transformation=True)
+            # now move to the algebraic closure
+            # so as to contain potential complex eigenvalues
+            try:
+                ring = A.base_ring()
+                closure = ring.algebraic_closure()
+                A = A.change_ring(closure)
+                B = B.change_ring(closure)
+                rat_form_A, SA = A.rational_form(transformation=True)
+                rat_form_B, SB = B.rational_form(transformation=True)
+                if rat_form_A == rat_form_B:
                     return (True, SB * SA.inverse())
-                except (ValueError, RuntimeError, NotImplementedError):
-                    raise RuntimeError('unable to compute transformation for similar matrices')
+                else:
+                    return (False, None)
+            except (ValueError, RuntimeError, NotImplementedError):
+                raise RuntimeError('unable to compute transformation for similar matrices')
 
     def symplectic_form(self):
         r"""
@@ -17275,7 +17245,7 @@ cdef class Matrix(Matrix1):
         else:
             return Z
 
-    def rational_form(self, format='right', subdivide=True, transform=False, test=False):
+    def rational_form(self, format='right', subdivide=True, transformation=False):
         r"""
         Returns the rational canonical form, also known as Frobenius form.
 
@@ -17637,7 +17607,8 @@ cdef class Matrix(Matrix1):
         from sage.arith.misc import GCD as gcd
         import sage.rings.polynomial.polynomial_ring_constructor
         from sage.matrix.constructor import (block_diagonal_matrix,
-                                             companion_matrix)
+                                             companion_matrix, matrix)
+        from sage.modules.free_module_element import vector
 
         R = self.base_ring()
         if not self.is_square():
@@ -17649,13 +17620,19 @@ cdef class Matrix(Matrix1):
         if subdivide not in [True, False]:
             raise ValueError("'subdivide' keyword must be True or False, not {0}".format(subdivide))
 
-        if transform and test:
-            #If self is cyclic, trivial case
-            if M.minimal_polynomial().degree() == self.nrows():
-                v = vector(R, [R(0)]*9 + [R(1)])
+        cdef Py_ssize_t k, j, i
+        cdef list C, B
+
+        n = self.nrows()
+        poly_minimal = self.minimal_polynomial()
+        if poly_minimal.degree() == n: #If self is cyclic
+            if transformation:
+                v = vector(R, [1] + [0]*(n-1))
                 iterates, _, _, _ = self._cyclic_subspace(v)
-                T = matrix(iterates)
+                T = matrix(iterates).transpose()
                 return (T.inverse()*self*T, T)
+            else:
+                return companion_matrix(poly_minimal)
 
             """
             U, Z, polys, corners = self._zigzag_form(basis=True)
@@ -17717,18 +17694,13 @@ cdef class Matrix(Matrix1):
             return (Z, augmentedT)"""
 
         else:
-            #If self is cyclic, trivial case
-            if M.minimal_polynomial().degree() == self.nrows() and test:
-                v = vector(R, [R(0)]*9 + [R(1)])
-                iterates, _, _, _ = self._cyclic_subspace(v)
-                T = matrix(iterates)
-                return T.inverse()*self*T
-            
             _, polys, corners = self._zigzag_form(basis=False)
-            cdef Py_ssize_t k = len(polys), j, i
+            
+            k = len(polys)
+        
             F = sage.rings.polynomial.polynomial_ring_constructor.PolynomialRing(R, 'x')
-            cdef list C = [F(p) for p in polys]
-            cdef list B = [b.is_one() for b in corners]
+            C = [F(p) for p in polys]
+            B = [b.is_one() for b in corners]
             B.append(False)  # no last block, so no corner
 
             if B[0]:
