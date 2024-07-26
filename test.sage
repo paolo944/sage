@@ -11,6 +11,37 @@ def rational_form_test(M, transform):
 		else:
 			return companion_matrix(poly_minimal)
 
+def keller_gehring(A, transformation=False, poly=True, frobenius:False):
+    n = A.nrows()
+    k = ceil(log(n, 2)) - 1
+    e = vector([1] + [0] * (n - 1))  # Vecteur unitaire e1
+
+    # Calculer les puissances de A
+    A_powers = [A]
+    for i in range(1, k + 1):
+        A_powers.append(A_powers[-1] * A_powers[-1])
+
+    # Calculer les vecteurs A^(2^i) * e
+    Ae_vectors = [e]
+    for i in range(k + 1):
+        Ae_vectors.append(A_powers[i] * e)
+
+    # Construire la matrice U
+    U = matrix(Ae_vectors).transpose()
+
+	if transformation and not poly and not frobenius:
+		return U
+
+    # Transformer A en forme de Frobenius simple
+    U_inv = U.inverse()
+    F = U_inv * A * U
+
+    # Extraire les coefficients du polynôme caractéristique
+	if poly:
+    	char_poly = F.charpoly()
+    	coefficients = char_poly.coefficients(sparse=False)
+		return coefficients
+
 def temps_nouveau(A, B):
 	try:
 		rat_form_A, SA = rational_form_test(A, True)
